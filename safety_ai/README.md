@@ -364,14 +364,8 @@ async def custom_endpoint():
 
 ## 🤝 贡献
 
-欢迎提交 Issue 和 Pull Request！
 
-## 📞 联系方式
-
-如有问题或建议，请提交 Issue 或通过以下方式联系：
-
-- 项目地址: [GitHub Repository]
-- 邮箱: [your-email@example.com]
+- 项目地址: [https://github.com/nanchuan18/Hazard-Recognition-Pipeline]
 
 ## 🙏 致谢
 

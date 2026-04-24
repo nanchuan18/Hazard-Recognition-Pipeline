@@ -180,6 +180,95 @@ def yolo_detect(image_path):
 
 
 # ===================== 跨模态对齐（核心联动） =====================
+def convert_bbox_to_percentage(bbox_json: str, img_width: int, img_height: int) -> str:
+    """
+    将像素坐标转换为百分比坐标
+    
+    Args:
+        bbox_json: 边界框 JSON 字符串，格式如 {"x": 100, "y": 200, "w": 50, "h": 60}
+        img_width: 图片宽度（像素）
+        img_height: 图片高度（像素）
+    
+    Returns:
+        str: 转换后的百分比坐标 JSON 字符串，格式如 {"x": 10.5, "y": 20.3, "w": 5.2, "h": 6.1}
+    """
+    import re as re_module
+    
+    try:
+        # 解析 JSON 字符串
+        if isinstance(bbox_json, str):
+            bbox = json.loads(bbox_json)
+        else:
+            bbox = bbox_json
+        
+        # 转换为百分比（保留两位小数）
+        x_pct = round((bbox['x'] / img_width) * 100, 2)
+        y_pct = round((bbox['y'] / img_height) * 100, 2)
+        w_pct = round((bbox['w'] / img_width) * 100, 2)
+        h_pct = round((bbox['h'] / img_height) * 100, 2)
+        
+        # 返回新的 JSON 字符串
+        return json.dumps({"x": x_pct, "y": y_pct, "w": w_pct, "h": h_pct})
+        
+    except json.JSONDecodeError as e:
+        # JSON 解析失败，尝试修复不规范格式
+        print(f"   ⚠️ bboxJson 格式错误，尝试修复: {bbox_json}")
+        try:
+            if isinstance(bbox_json, str):
+                # 使用更智能的正则表达式提取 x, y, w, h
+                x_match = re_module.search(r'"x"\s*:\s*(\d+)', bbox_json)
+                y_match = re_module.search(r'"y"\s*:\s*(\d+)', bbox_json)
+                w_match = re_module.search(r'"w"\s*:\s*(\d+)', bbox_json)
+                h_match = re_module.search(r'"h"\s*:\s*(\d+)', bbox_json)
+                
+                if x_match and y_match and w_match and h_match:
+                    x = int(x_match.group(1))
+                    y = int(y_match.group(1))
+                    w = int(w_match.group(1))
+                    h = int(h_match.group(1))
+                    
+                    # 转换为百分比
+                    x_pct = round((x / img_width) * 100, 2)
+                    y_pct = round((y / img_height) * 100, 2)
+                    w_pct = round((w / img_width) * 100, 2)
+                    h_pct = round((h / img_height) * 100, 2)
+                    
+                    print(f"   ✅ 修复成功: x={x}, y={y}, w={w}, h={h} -> x={x_pct}%, y={y_pct}%, w={w_pct}%, h={h_pct}%")
+                    return json.dumps({"x": x_pct, "y": y_pct, "w": w_pct, "h": h_pct})
+                else:
+                    # 如果键名匹配失败，尝试提取前4个数字（兼容旧格式）
+                    print(f"   ⚠️ 无法通过键名提取，尝试按位置提取数字...")
+                    all_numbers = re_module.findall(r'\d+', bbox_json)
+                    if len(all_numbers) >= 4:
+                        # 过滤掉过小的数字（可能是版本号或其他干扰）
+                        valid_numbers = [int(n) for n in all_numbers if int(n) > 10]
+                        if len(valid_numbers) >= 4:
+                            x, y, w, h = valid_numbers[:4]
+                            
+                            # 转换为百分比
+                            x_pct = round((x / img_width) * 100, 2)
+                            y_pct = round((y / img_height) * 100, 2)
+                            w_pct = round((w / img_width) * 100, 2)
+                            h_pct = round((h / img_height) * 100, 2)
+                            
+                            print(f"   ✅ 按位置修复成功: [{x}, {y}, {w}, {h}] -> [{x_pct}%, {y_pct}%, {w_pct}%, {h_pct}%]")
+                            return json.dumps({"x": x_pct, "y": y_pct, "w": w_pct, "h": h_pct})
+                    
+                    print(f"   ❌ 修复失败: 无法提取足够的坐标数据")
+            
+        except Exception as fix_error:
+            print(f"   ❌ 修复失败: {fix_error}")
+            import traceback
+            traceback.print_exc()
+        
+        # 返回原始数据
+        return bbox_json if isinstance(bbox_json, str) else json.dumps(bbox_json)
+        
+    except Exception as e:
+        print(f"   ⚠️ 坐标转换失败: {e}，保持原始坐标")
+        return bbox_json if isinstance(bbox_json, str) else json.dumps(bbox_json)
+
+
 def is_inside_region(obj_box, region_box):
     """
     判断目标是否在区域内
@@ -194,6 +283,29 @@ def is_inside_region(obj_box, region_box):
     ox1, oy1, ox2, oy2 = obj_box
     rx1, ry1, rx2, ry2 = region_box
     return ox1 >= rx1 and oy1 >= ry1 and ox2 <= rx2 and oy2 <= ry2
+
+
+def calculate_hazard_score_and_confidence(hazard_level_id: int) -> tuple:
+    """
+    根据隐患等级计算 score 和 confidence
+    
+    Args:
+        hazard_level_id: 隐患等级ID（1=一般隐患, 2=较大隐患, 3=重大隐患）
+    
+    Returns:
+        tuple: (score, confidence)
+            - score: 隐患评分（0-100，越高风险越低）
+            - confidence: 置信度（0-1）
+    """
+    # 等级映射到分数和置信度
+    level_config = {
+        1: {"score": 85.0, "confidence": 0.85},  # 一般隐患（低）
+        2: {"score": 60.0, "confidence": 0.75},  # 较大隐患（中）
+        3: {"score": 30.0, "confidence": 0.90}   # 重大隐患（高）
+    }
+    
+    config = level_config.get(hazard_level_id, level_config[2])  # 默认较大隐患
+    return config["score"], config["confidence"]
 
 
 def filter_objects_in_regions(objects, regions):
@@ -219,17 +331,27 @@ def filter_objects_in_regions(objects, regions):
 
 
 # ===================== Qwen-VL 隐患推理 =====================
-def parse_qwen_vl_result(qwen_text: str) -> List[Dict[str, Any]]:
+def parse_qwen_vl_result(qwen_text: str, image_path: str = None) -> List[Dict[str, Any]]:
     """
     解析 Qwen-VL 返回的文本，提取结构化隐患数据
     
     Args:
         qwen_text: Qwen-VL 返回的文本（可能是 JSON 字符串或普通文本）
+        image_path: 图片路径，用于获取图片尺寸以转换坐标为百分比
     
     Returns:
-        list: 隐患列表，每个隐患包含 hazardTypeName, hazardLevelName, bboxJson, advice
+        list: 隐患列表，每个隐患包含 hazardTypeId, hazardLevelId, bboxJson, reasonText
     """
     import re
+    import cv2
+    
+    # 获取图片尺寸用于坐标转换
+    img_width, img_height = None, None
+    if image_path and os.path.exists(image_path):
+        img = cv2.imread(image_path)
+        if img is not None:
+            img_height, img_width = img.shape[:2]
+            print(f"   图片尺寸: {img_width}x{img_height}")
     
     try:
         # 尝试直接解析 JSON
@@ -238,21 +360,30 @@ def parse_qwen_vl_result(qwen_text: str) -> List[Dict[str, Any]]:
         # 如果返回的是 JSON 数组格式
         if qwen_text.startswith('['):
             results = json.loads(qwen_text)
-            # 转换为新格式
+            # 转换为标准格式
             if isinstance(results, list):
                 cleaned_results = []
                 for item in results:
                     if isinstance(item, dict):
-                        # 转换字段名
-                        hazard_type_name = item.get('hazardTypeName', '')
-                        hazard_level_name = item.get('hazardLevelName', '')
+                        # 直接使用 ID 格式
+                        bbox_json = item.get('bboxJson')
+                        hazard_level_id = item.get('hazardLevelId', 2)
+                        
+                        # 如果提供了图片尺寸且 bboxJson 存在，转换像素坐标为百分比
+                        if bbox_json and img_width and img_height:
+                            bbox_json = convert_bbox_to_percentage(bbox_json, img_width, img_height)
+                        
+                        # 计算 score 和 confidence
+                        score, confidence = calculate_hazard_score_and_confidence(hazard_level_id)
                         
                         cleaned_item = {
-                            "hazardTypeId": HAZARD_TYPE_MAP.get(hazard_type_name, 9),
-                            "hazardLevelId": HAZARD_LEVEL_MAP.get(hazard_level_name, 2),
-                            "bboxJson": item.get('bboxJson'),
+                            "hazardTypeId": item.get('hazardTypeId', 9),
+                            "hazardLevelId": hazard_level_id,
+                            "score": score,
+                            "confidence": confidence,
+                            "bboxJson": bbox_json,
                             "segmentJson": None,
-                            "reasonText": item.get('advice'),
+                            "reasonText": item.get('reasonText'),
                             "ruleMatchJson": None
                         }
                         cleaned_results.append(cleaned_item)
@@ -260,26 +391,35 @@ def parse_qwen_vl_result(qwen_text: str) -> List[Dict[str, Any]]:
             return []
         
         # 如果返回的是带代码块的 JSON
-        if '``json' in qwen_text:
+        if '```json' in qwen_text:
             match = re.search(r'```json\s*(.*?)\s*```', qwen_text, re.DOTALL)
             if match:
                 json_str = match.group(1)
                 results = json.loads(json_str)
-                # 转换为新格式
+                # 转换为标准格式
                 if isinstance(results, list):
                     cleaned_results = []
                     for item in results:
                         if isinstance(item, dict):
-                            # 转换字段名
-                            hazard_type_name = item.get('hazardTypeName', '')
-                            hazard_level_name = item.get('hazardLevelName', '')
+                            # 直接使用 ID 格式
+                            bbox_json = item.get('bboxJson')
+                            hazard_level_id = item.get('hazardLevelId', 2)
+                            
+                            # 如果提供了图片尺寸且 bboxJson 存在，转换像素坐标为百分比
+                            if bbox_json and img_width and img_height:
+                                bbox_json = convert_bbox_to_percentage(bbox_json, img_width, img_height)
+                            
+                            # 计算 score 和 confidence
+                            score, confidence = calculate_hazard_score_and_confidence(hazard_level_id)
                             
                             cleaned_item = {
-                                "hazardTypeId": HAZARD_TYPE_MAP.get(hazard_type_name, 9),
-                                "hazardLevelId": HAZARD_LEVEL_MAP.get(hazard_level_name, 2),
-                                "bboxJson": item.get('bboxJson'),
+                                "hazardTypeId": item.get('hazardTypeId', 9),
+                                "hazardLevelId": hazard_level_id,
+                                "score": score,
+                                "confidence": confidence,
+                                "bboxJson": bbox_json,
                                 "segmentJson": None,
-                                "reasonText": item.get('advice'),
+                                "reasonText": item.get('reasonText'),
                                 "ruleMatchJson": None
                             }
                             cleaned_results.append(cleaned_item)
@@ -303,11 +443,15 @@ def parse_qwen_vl_result(qwen_text: str) -> List[Dict[str, Any]]:
             
             # 根据等级设置分数
             score_map = {"高": 30.0, "中": 60.0, "低": 85.0}
+            confidence_map = {"高": 0.90, "中": 0.75, "低": 0.85}
             score = score_map.get(hazard_level, 60.0)
+            confidence = confidence_map.get(hazard_level, 0.75)
             
             hazards.append({
                 "hazardTypeId": HAZARD_TYPE_MAP.get(hazard_type, 9),  # 默认值9（缺少安全警示标志）
                 "hazardLevelId": HAZARD_LEVEL_MAP.get(hazard_level, 2),  # 默认值2（较大隐患）
+                "score": score,
+                "confidence": confidence,
                 "bboxJson": json.dumps({"x": 31, "y": 43, "w": 25, "h": 18}),
                 "segmentJson": None,
                 "reasonText": f"建议整改：{description}",
@@ -361,14 +505,22 @@ def parse_qwen_vl_result(qwen_text: str) -> List[Dict[str, Any]]:
                                 hazard_type_name = item.get('hazardTypeName', '')
                                 hazard_level_name = item.get('hazardLevelName', '')
                                 
+                                bbox_json = item.get('bboxJson')
+                                # 如果提供了图片尺寸且 bboxJson 存在，转换像素坐标为百分比
+                                if bbox_json and img_width and img_height:
+                                    bbox_json = convert_bbox_to_percentage(bbox_json, img_width, img_height)
+                                
                                 cleaned_item = {
                                     "hazardTypeId": HAZARD_TYPE_MAP.get(hazard_type_name, 9),
                                     "hazardLevelId": HAZARD_LEVEL_MAP.get(hazard_level_name, 2),
-                                    "bboxJson": item.get('bboxJson'),
+                                    "bboxJson": bbox_json,
                                     "segmentJson": None,
                                     "reasonText": item.get('advice'),
                                     "ruleMatchJson": None
                                 }
+                                cleaned_item["score"], cleaned_item["confidence"] = calculate_hazard_score_and_confidence(
+                                    cleaned_item["hazardLevelId"]
+                                )
                                 cleaned_results.append(cleaned_item)
                         if cleaned_results:
                             print(f"✅ 修复后成功解析 {len(cleaned_results)} 个隐患")
@@ -377,8 +529,8 @@ def parse_qwen_vl_result(qwen_text: str) -> List[Dict[str, Any]]:
                     pass
             
             # 2. 尝试从截断的 JSON 中提取有用的部分
-            # 提取所有完整的隐患对象
-            hazard_pattern = r'\{[^}]*"hazardTypeName"[^}]*"hazardLevelName"[^}]*\}'
+            # 提取所有完整的隐患对象（支持 ID 格式和名称格式）
+            hazard_pattern = r'\{[^}]*(?:"hazardTypeId"|"hazardTypeName")[^}]*(?:"hazardLevelId"|"hazardLevelName")[^}]*\}'
             matches = re_module.findall(hazard_pattern, qwen_text_fixed, re_module.DOTALL)
             
             if matches:
@@ -386,21 +538,51 @@ def parse_qwen_vl_result(qwen_text: str) -> List[Dict[str, Any]]:
                 cleaned_results = []
                 for match in matches:
                     try:
-                        hazard = json.loads(match)
-                        # 转换为新格式
-                        hazard_type_name = hazard.get('hazardTypeName', '')
-                        hazard_level_name = hazard.get('hazardLevelName', '')
+                        # 先修复单个对象中的 bboxJson
+                        match_fixed = re_module.sub(
+                            r'"bboxJson"\s*:\s*"([^"]*(?:"[^"]*)*[^"]*)"',
+                            fix_bbox_json,
+                            match
+                        )
+                        hazard = json.loads(match_fixed)
                         
-                        cleaned_item = {
-                            "hazardTypeId": HAZARD_TYPE_MAP.get(hazard_type_name, 9),
-                            "hazardLevelId": HAZARD_LEVEL_MAP.get(hazard_level_name, 2),
-                            "bboxJson": hazard.get('bboxJson'),
-                            "segmentJson": None,
-                            "reasonText": hazard.get('advice'),
-                            "ruleMatchJson": None
-                        }
+                        # 支持两种格式：ID 格式和名称格式
+                        if 'hazardTypeId' in hazard:
+                            # 新格式：直接使用 ID
+                            bbox_json = hazard.get('bboxJson')
+                            # 如果提供了图片尺寸且 bboxJson 存在，转换像素坐标为百分比
+                            if bbox_json and img_width and img_height:
+                                bbox_json = convert_bbox_to_percentage(bbox_json, img_width, img_height)
+                            
+                            cleaned_item = {
+                                "hazardTypeId": hazard.get('hazardTypeId', 9),
+                                "hazardLevelId": hazard.get('hazardLevelId', 2),
+                                "bboxJson": bbox_json,
+                                "segmentJson": None,
+                                "reasonText": hazard.get('reasonText') or hazard.get('advice'),
+                                "ruleMatchJson": None
+                            }
+                        else:
+                            # 旧格式：需要转换名称为 ID
+                            hazard_type_name = hazard.get('hazardTypeName', '')
+                            hazard_level_name = hazard.get('hazardLevelName', '')
+                            
+                            bbox_json = hazard.get('bboxJson')
+                            # 如果提供了图片尺寸且 bboxJson 存在，转换像素坐标为百分比
+                            if bbox_json and img_width and img_height:
+                                bbox_json = convert_bbox_to_percentage(bbox_json, img_width, img_height)
+                            
+                            cleaned_item = {
+                                "hazardTypeId": HAZARD_TYPE_MAP.get(hazard_type_name, 9),
+                                "hazardLevelId": HAZARD_LEVEL_MAP.get(hazard_level_name, 2),
+                                "bboxJson": bbox_json,
+                                "segmentJson": None,
+                                "reasonText": hazard.get('reasonText') or hazard.get('advice'),
+                                "ruleMatchJson": None
+                            }
                         cleaned_results.append(cleaned_item)
-                    except:
+                    except Exception as obj_err:
+                        print(f"   跳过无法解析的对象: {obj_err}")
                         continue
                 
                 if cleaned_results:
@@ -422,14 +604,22 @@ def parse_qwen_vl_result(qwen_text: str) -> List[Dict[str, Any]]:
                                 hazard_type_name = item.get('hazardTypeName', '')
                                 hazard_level_name = item.get('hazardLevelName', '')
                                 
+                                bbox_json = item.get('bboxJson')
+                                # 如果提供了图片尺寸且 bboxJson 存在，转换像素坐标为百分比
+                                if bbox_json and img_width and img_height:
+                                    bbox_json = convert_bbox_to_percentage(bbox_json, img_width, img_height)
+                                
                                 cleaned_item = {
                                     "hazardTypeId": HAZARD_TYPE_MAP.get(hazard_type_name, 9),
                                     "hazardLevelId": HAZARD_LEVEL_MAP.get(hazard_level_name, 2),
-                                    "bboxJson": item.get('bboxJson'),
+                                    "bboxJson": bbox_json,
                                     "segmentJson": None,
                                     "reasonText": item.get('advice'),
                                     "ruleMatchJson": None
                                 }
+                                cleaned_item["score"], cleaned_item["confidence"] = calculate_hazard_score_and_confidence(
+                                    cleaned_item["hazardLevelId"]
+                                )
                                 cleaned_results.append(cleaned_item)
                         print(f"✅ 从部分 JSON 中解析成功，共 {len(cleaned_results)} 个隐患")
                         return cleaned_results
@@ -442,6 +632,8 @@ def parse_qwen_vl_result(qwen_text: str) -> List[Dict[str, Any]]:
         return [{
             "hazardTypeId": 9,  # 默认值9（缺少安全警示标志）
             "hazardLevelId": 2,  # 默认值2（较大隐患）
+            "score": 60.0,
+            "confidence": 0.75,
             "bboxJson": json.dumps({"x": 50, "y": 50, "w": 20, "h": 20}),
             "segmentJson": None,
             "reasonText": f"AI 分析结果解析失败，请人工复核。原始输出：{qwen_text[:100]}",
@@ -455,6 +647,8 @@ def parse_qwen_vl_result(qwen_text: str) -> List[Dict[str, Any]]:
         return [{
             "hazardTypeId": 9,  # 默认值9（缺少安全警示标志）
             "hazardLevelId": 2,  # 默认值2（较大隐患）
+            "score": 60.0,
+            "confidence": 0.75,
             "bboxJson": json.dumps({"x": 50, "y": 50, "w": 20, "h": 20}),
             "segmentJson": None,
             "reasonText": f"AI 分析结果解析失败，请人工复核。原始输出：{qwen_text[:100]}",
@@ -484,7 +678,7 @@ def safety_check(image_path, regions, objects):
     qwen_text = qwen_vl_infer(image_path, regions, objects, rules)
     
     # 解析 Qwen-VL 返回的结果为结构化数据
-    hazards = parse_qwen_vl_result(qwen_text)
+    hazards = parse_qwen_vl_result(qwen_text, image_path)
     
     print(f"Qwen-VL 分析完成，发现 {len(hazards)} 个隐患")
     return hazards
@@ -617,6 +811,8 @@ class HazardResult(BaseModel):
     """隐患结果模型"""
     hazardTypeId: int = Field(..., description="隐患类型ID")
     hazardLevelId: int = Field(..., description="隐患等级ID")
+    score: float = Field(0.0, description="隐患评分（0-100，越高风险越低）")
+    confidence: float = Field(0.0, description="置信度（0-1）")
     bboxJson: Optional[str] = Field(None, description="隐患位置边界框 JSON 字符串")
     segmentJson: Optional[str] = Field(None, description="分割信息（固定为null）")
     reasonText: Optional[str] = Field(None, description="安全建议")
@@ -865,20 +1061,36 @@ app = FastAPI(
 
 ```json
 {
-    
-        "results": [
-            {
-                "hazardTypeId": 9,
-                "hazardLevelId": 1,
-                "bboxJson": "{\"x\":31,\"y\":43,\"w\":25,\"h\":18}",
-                "segmentJson": null,
-                "reasonText": "建议补充安全警示标识",
-                "ruleMatchJson": null
-            }
-        ]
-    
+    "results": [
+        {
+            "hazardTypeId": 9,
+            "hazardLevelId": 1,
+            "score": 85.0,
+            "confidence": 0.85,
+            "bboxJson": "{\"x\":31,\"y\":43,\"w\":25,\"h\":18}",
+            "segmentJson": null,
+            "reasonText": "建议补充安全警示标识",
+            "ruleMatchJson": null
+        }
+    ]
 }
 ```
+
+**字段说明**：
+- **hazardTypeId**: 隐患类型ID（1-32）
+- **hazardLevelId**: 隐患等级ID（1=一般隐患, 2=较大隐患, 3=重大隐患）
+- **score**: 隐患评分（0-100，分数越高风险越低）
+  - 一般隐患：85.0
+  - 较大隐患：60.0
+  - 重大隐患：30.0
+- **confidence**: 置信度（0-1）
+  - 一般隐患：0.85
+  - 较大隐患：0.75
+  - 重大隐患：0.90
+- **bboxJson**: 隐患位置边界框（百分比坐标）
+- **segmentJson**: 分割信息（固定为null）
+- **reasonText**: 安全建议
+- **ruleMatchJson**: 规则匹配信息（固定为null）
     """,
     version="1.0.0",
     docs_url="/docs",
